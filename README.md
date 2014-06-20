@@ -1,5 +1,5 @@
-Preactical Machine Learning -PeerAssessment_01
-===========================
+Practical Machine Learning - PeerAssessment_01
+==========================
 
 John Hopkins Practical Machine Learning Peer Assignment 01.
 
