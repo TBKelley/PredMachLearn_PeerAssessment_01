@@ -1,0 +1,166 @@
+---
+title: "Practical Machine Learning Peer Assignment 01"
+date: "Friday, June 20, 2014"
+output: html_document
+---
+# Executive Summary
+To predict the **classe** classification given **pml-training.csv**, three supervised machine learning models were trained, and 95% accuracy estimate bands were calculated for each model using a re-sampling technique (caret default).
+
+Model                               | Out of Sample Accuracy | 95% Accuracy Estimate Band
+----------------------------------- | ---------------------- | --------------------------
+**_Random Forest_(rf)**             | **98.5%**              | [96.32%, 98.18%]
+Stochastic Gradient Boosting (gbm)  | 95.3%                  | [93.07%, 95.64%]
+Support Vector Machines (svmRadial) | 88.6%                  | [82.44%, 88.17%]
+
+_NOTE: It is unusual that the Out of Sample Accuracy is at the upper end of each estimate band._
+
+70% of the training data was saved as Cross Validation data and used to calculate **out of sample error** estimates that were compared to the 95% accuracy estimate bands to provide confidence in the design methodology.
+
+The **caret** model classes were used to optimize each model and to determine feature properties such as which predictive features were most important and to optimize model parameters.
+
+A box plot of the of the Accuracy Error Bands was constructed to determine the best model, the **caret** **Random Forest(rf)** was a clear winner with a Cross Validation Out of Sample Accuracy of **98.5%**
+
+Probabilities for each **classe** classification was used to predict not just the most likely, but also the second most likely answer.
+
+# Model Design and Code Details
+## Loading and cleaning data
+```{r, echo=FALSE, results='hide', warning=FALSE, message=FALSE}
+library(ggplot2)
+library(lattice)
+library(caret)
+library(splines)
+library(survival)
+library(gbm)
+library(randomForest)
+library(plyr)
+library(splines)
+library(survival)
+library(parallel)
+library(iterators)
+library(foreach)
+library(doParallel)
+library(kernlab)
+source("Accuracy.R") 
+source("pml_write_files.R")
+```
+The training and test data was loaded and all columns full of NA were removed.
+Likewise other non-predictive columns where removed to create clean tidy data.frame. 
+```{r}
+dfRawTrain <- read.csv("pml-training.csv", sep=",") # dim=19622,160
+dfRawTest <- read.csv("pml-testing.csv", sep=",") # dim=20,160
+
+removeNames <- c("X", "user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp", "new_window", "num_window","problem_id")
+namesFeatures <- names(dfRawTest[,colSums(is.na(dfRawTest)) != nrow(dfRawTest)]) # Remove columns with NA
+namesFeatures <- namesFeatures[ -which(namesFeatures %in% removeNames)] # Remove non-feature
+
+dfTidyTrain <- dfRawTrain[, c("classe", namesFeatures)] # dim=19622,53
+dfTidyTest <- dfRawTest[, c("problem_id", namesFeatures)] # dim=20,53
+```
+Due to the large amount of Training data and limited machine Memory capacity the Training data was split 30% training and 70% Cross Validation (much more than usual).
+```{r}
+set.seed(42)
+idxSample <- createDataPartition(y=dfTidyTrain$classe, p=0.30, list=FALSE)
+dfTrain <- dfTidyTrain[idxSample,] # dim=5889,53
+dfCross <- dfTidyTrain[-idxSample,] # dim=13733,53
+dfTest <- dfTidyTest # dim=20,53
+```
+```{r, echo=FALSE, results='hide'}
+rm(dfRawTrain)
+rm(dfRawTest)
+rm(dfTidyTrain)
+rm(dfTidyTest)
+```
+
+## Exploratory analysis
+Analysis was done on the Tidy Data, to detect outliers that might effect certain models. Nothing exceptional was found.
+
+Each feature was numeric and QQ plots show each predictive feature to be reasonably behaved, leading one to think most machine learning algorithms will be appropriate with low variance. Many features were approximately normal with slightly shorter tails.
+
+Example: **accel_forearm_x**
+```{r}
+qqnorm(dfTrain$accel_forearm_x)
+qqline(dfTrain$accel_forearm_x)
+```
+
+## Model Selection
+### Fitting models
+NOTE: It should be noted that the **caret** models can utilize all CPU cores on a machine if **registerDoParallel()** is set.
+```
+c7 <- makeCluster(7)  # Use 7 CPU Cores
+registerDoParallel(c7)
+getDoParWorkers() # Verify how many cores will be used.
+
+set.seed(42)
+rfModel <- train(classe ~ ., data=dfTrain, method="rf", prox=TRUE)
+rfModel
+accuracyRange <- rfModel$results$Accuracy[2] + c(-1, 1) * 2 * rfModel$results$AccuracySD[2]
+cat("95% Estimated Accuracy band = [", sprintf("%4.2f%%", accuracyRange*100), "]")
+Accuracy(rfModel, "CV", dfCross) # 98.5%
+
+set.seed(42)
+gbmModel <- train(classe ~ ., data=dfTrain, method="gbm", verbose=FALSE)
+gbmModel
+accuracyRange <- gbmModel$results$Accuracy[9] + c(-1, 1) * 2 * gbmModel$results$AccuracySD[9]
+cat("95% Estimated Accuracy band = [", sprintf("%4.2f%%", accuracyRange*100), "]")
+Accuracy(gbmModel, "CV", dfCross) # 95.3%
+
+set.seed(42)
+svmModel <- train(classe ~ ., data=dfTrain, method="svmRadial", preProc = c("center", "scale"), metric = "Accuracy")
+svmModel
+accuracyRange <- svmModel$results$Accuracy[2] + c(-1, 1) * 2 * svmModel$results$AccuracySD[2]
+cat("95% Estimated Accuracy band = [", sprintf("%4.2f%%", accuracyRange*100), "]")
+Accuracy(svmModel, "CV", dfCross) # 88.6%
+
+stopCluster(c7)
+```
+The **caret** models calculate **In Sample Accuracy Estimate** bands by default (using re-sampling).
+Accuracy bands are given for each model parameter values and the parameter values with best accuracy is automatically selected for the final model.
+
+The Cross Validation data is then used to calculate an **Out of Sample Accuracy** that was compare to the **In Sample Accuracy Estimate** bands, as a sanity check.
+```{r, echo=FALSE, cache=TRUE}
+rfModel <- readRDS(file="rfModel.Rda")
+gbmModel <- readRDS(file="gbmModel.Rda")
+svmModel <- readRDS(file="svmModel.Rda")
+
+rfModel
+accuracyRange <- rfModel$results$Accuracy[2] + c(-1, 1) * 2 * rfModel$results$AccuracySD[2]
+cat("95% Estimated Accuracy band = [", sprintf("%4.2f%%", accuracyRange*100), "]")
+Accuracy(rfModel, "CV", dfCross) # 98.5%
+
+gbmModel
+accuracyRange <- gbmModel$results$Accuracy[9] + c(-1, 1) * 2 * gbmModel$results$AccuracySD[9]
+cat("95% Estimated Accuracy band = [", sprintf("%4.2f%%", accuracyRange*100), "]")
+Accuracy(gbmModel, "CV", dfCross) # 95.3%
+
+svmModel
+accuracyRange <- svmModel$results$Accuracy[2] + c(-1, 1) * 2 * svmModel$results$AccuracySD[2]
+cat("95% Estimated Accuracy band = [", sprintf("%4.2f%%", accuracyRange*100), "]")
+Accuracy(svmModel, "CV", dfCross) # 88.6%
+```
+The **rf** class optimization used only 27 of the 52 predictive features per tree.
+This is the optimal balance between bias error and variance error.
+
+The most important predictive features were:
+```{r}
+varImp(rfModel)
+```
+A box plot of the three models shows the **rf** Random Forest is a clear winner, based on the Accuracy and Kappa estimate bands.
+```{r}
+modelCompare <- resamples(list(RF=rfModel, GBM=gbmModel, SVM=svmModel))
+
+theme1 <- trellis.par.get()
+theme1$plot.symbol$col = rgb(.2, .2, .2, .4)
+theme1$plot.symbol$pch = 16
+theme1$plot.line$col = rgb(1, 0, 0, .7)
+theme1$plot.line$lwd <- 2
+trellis.par.set(theme1)
+bwplot(modelCompare, layout = c(3, 1))
+```
+<p/>
+Probabilities of each **classe** classification of the test data were calculated using the **rf** Random Forest model, 
+both the most likely and second most likely classification were used to solve the submission part of the assignment.
+```{r}
+predict(rfModel, newdata=dfTest, type = "prob")
+```
+
+
